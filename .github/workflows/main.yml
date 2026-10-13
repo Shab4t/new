@@ -1,0 +1,48 @@
+name: windows-rdp-debug
+
+on:
+  workflow_dispatch:
+
+jobs:
+  rdp-debug:
+    runs-on: windows-2022
+    timeout-minutes: 350   # auto-terminates; don't leave RDP runners open indefinitely
+
+    steps:
+      - name: Enable Remote Desktop
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+            -Name "fDenyTSConnections" -Value 0 -Force
+          # Leave NLA and SecurityLayer at their secure defaults — do not disable
+          netsh advfirewall firewall add rule name="RDP" dir=in action=allow protocol=TCP localport=3389
+
+      - name: Create RDP user
+        run: |
+          $securePass = ConvertTo-SecureString "${{ secrets.RDP_PASSWORD }}" -AsPlainText -Force
+          New-LocalUser -Name "rdpuser" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "rdpuser"
+          # Note: NOT added to Administrators — least privilege
+
+      - name: Install Tailscale
+        run: |
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+
+      - name: Connect to Tailscale
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
+            --authkey=${{ secrets.TAILSCALE_AUTHKEY }} `
+            --hostname=gh-runner-${{ github.run_id }}
+
+      - name: Show connection info
+        run: |
+          Start-Sleep -Seconds 5
+          $ip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          Write-Host "RDP to: $ip  |  User: rdpuser"
+
+      - name: Keep runner alive for debugging
+        run: |
+          Write-Host "RDP session active. Will auto-terminate at timeout."
+          Start-Sleep -Seconds 6000   # ~100 min, under the job timeout
